@@ -1,7 +1,5 @@
 # QuickModelAlign
 
-** The repo has been updated as of 05/15/2026 to support Slicer ver. 5.10.0 and is compatible with Windows, Linux, MacOS 
-
 This is a 3D Slicer extension that allows for rapid alignment and comparison (visual & metric) of two 3D models using ALPACA's point-cloud based alignment capabilities.
 
 It is freely usable, without any restrictions.

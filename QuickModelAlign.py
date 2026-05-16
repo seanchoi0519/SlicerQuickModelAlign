@@ -1,5 +1,7 @@
 ##BASE PYTHON
 import os
+import sys
+import platform
 import unittest
 import logging
 import copy
@@ -41,6 +43,72 @@ Dr. Sean Choi has led development of this extension project to enable quick, sim
 # QuickModelAlignWidget
 #
 
+class ModelDropBox(qt.QWidget):
+  def __init__(self, labelText, pathLineEdit, onChangedCallback, parent=None):
+    qt.QWidget.__init__(self, parent)
+
+    self.pathLineEdit = pathLineEdit
+    self.onChangedCallback = onChangedCallback
+
+    self.setAcceptDrops(True)
+
+    boxLayout = qt.QVBoxLayout(self)
+    boxLayout.setContentsMargins(0, 0, 0, 0)
+    boxLayout.setSpacing(0)
+
+    self.vtkView = ctk.ctkVTKRenderView()
+    self.vtkView.setMinimumHeight(220)
+    boxLayout.addWidget(self.vtkView)
+
+    self.renderer = vtk.vtkRenderer()
+    self.renderer.SetBackground(1, 1, 1)
+    self.vtkView.renderWindow().AddRenderer(self.renderer)
+
+    self.interactor = self.vtkView.renderWindow().GetInteractor()
+    self.interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
+
+    self.actor = None
+
+    self.setStyleSheet("background-color: white; border: none;")
+
+  def dragEnterEvent(self, event):
+    if event.mimeData().hasUrls():
+      event.acceptProposedAction()
+
+  def dropEvent(self, event):
+    urls = event.mimeData().urls()
+    if not urls:
+      return
+
+    filePath = urls[0].toLocalFile()
+
+    if not filePath.lower().endswith(".ply"):
+      slicer.util.errorDisplay("Please drop a .ply file.")
+      return
+
+    self.pathLineEdit.currentPath = filePath
+
+    reader = vtk.vtkPLYReader()
+    reader.SetFileName(filePath)
+    reader.Update()
+
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(reader.GetOutputPort())
+
+    if self.actor:
+      self.renderer.RemoveActor(self.actor)
+
+    self.actor = vtk.vtkActor()
+    self.actor.SetMapper(mapper)
+    self.actor.GetProperty().SetColor(0.85, 0.85, 0.85)
+
+    self.renderer.AddActor(self.actor)
+    self.renderer.ResetCamera()
+    self.vtkView.renderWindow().Render()
+
+    self.onChangedCallback()
+
+
 class QuickModelAlignWidget(ScriptedLoadableModuleWidget):
   """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
@@ -52,52 +120,56 @@ class QuickModelAlignWidget(ScriptedLoadableModuleWidget):
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
     # Ensure that correct version of open3d Python package is installed
-    needRestart = False
+        # Ensure required Python packages are installed correctly
+    Open3dVersion = "0.19.0" if sys.version_info >= (3, 12) else "0.18.0"
     needInstall = False
-    Open3dVersion = "0.14.1+816263b"
+
     try:
       import open3d as o3d
-      import cpdalp
       from packaging import version
+
       if version.parse(o3d.__version__) != version.parse(Open3dVersion):
-        if not slicer.util.confirmOkCancelDisplay(f"QuickModelAlign requires installation of open3d (version {Open3dVersion}).\nClick OK to upgrade open3d and restart the application."):
-          #self.ui.showBrowserOnEnter = False
-          return
-        needRestart = True
         needInstall = True
-    except ModuleNotFoundError:
+
+    except (ModuleNotFoundError, ImportError) as e:
+      logging.warning(f"QuickModelAlign dependency problem: {e}")
       needInstall = True
 
     if needInstall:
-      progressDialog = slicer.util.createProgressDialog(labelText='Upgrading open3d. This may take a minute...', maximum=0)
+      if not slicer.util.confirmOkCancelDisplay(
+        "QuickModelAlign needs to install required Python packages.\n\n"
+        "Click OK to install them, then Slicer will restart."
+      ):
+        return
+
+      progressDialog = slicer.util.createProgressDialog(
+        labelText="Installing QuickModelAlign dependencies...",
+        maximum=0
+      )
       slicer.app.processEvents()
-      import SampleData
-      sampleDataLogic = SampleData.SampleDataLogic()
-      try:
-        if slicer.app.os == 'win':
-          url = "https://app.box.com/shared/static/friq8fhfi8n4syklt1v47rmuf58zro75.whl"
-          wheelName = "open3d-0.14.1+816263b-cp39-cp39-win_amd64.whl"
-          wheelPath = sampleDataLogic.downloadFile(url, slicer.app.cachePath, wheelName)
-        elif slicer.app.os == 'macosx':
-          url = "https://app.box.com/shared/static/ixhac95jrx7xdxtlagwgns7vt9b3mbqu.whl"
-          wheelName = "open3d-0.14.1+816263b-cp39-cp39-macosx_10_15_x86_64.whl"
-          wheelPath = sampleDataLogic.downloadFile(url, slicer.app.cachePath, wheelName)
-        elif slicer.app.os == 'linux':
-          url = "https://app.box.com/shared/static/wyzk0f9jhefrbm4uukzym0sow5bf26yi.whl"
-          wheelName = "open3d-0.14.1+816263b-cp39-cp39-manylinux_2_27_x86_64.whl"
-          wheelPath = sampleDataLogic.downloadFile(url, slicer.app.cachePath, wheelName)
-      except:
-          slicer.util.infoDisplay('Error: please check the url of the open3d wheel in the script')
-          progressDialog.close()
-      slicer.util.pip_install(f'cpdalp')
-      # wheelPath may contain spaces, therefore pass it as a list (that avoids splitting
-      # the argument into multiple command-line arguments when there are spaces in the path)
-      slicer.util.pip_install([wheelPath])
-      import open3d as o3d
-      import cpdalp
+
+      slicer.util.pip_install(f"--no-cache-dir open3d=={Open3dVersion}")
       progressDialog.close()
-    if needRestart:
-      slicer.util.restart()
+
+      try:
+        import open3d as o3d
+        logging.info(f"Open3D installed successfully: {o3d.__version__}")
+      except Exception as verifyError:
+        slicer.util.errorDisplay(
+          "QuickModelAlign installed packages, but they still cannot load.\n\n"
+          "Slicer will not restart automatically.\n\n"
+          f"Error:\n{verifyError}"
+        )
+        return
+
+      if slicer.util.confirmOkCancelDisplay(
+        "QuickModelAlign dependencies installed successfully.\n\n"
+        "Click OK to restart Slicer now."
+      ):
+        slicer.util.restart()
+      return
+
+
 
     self.showMinimalScreenUI()
     self.updateLayout()
@@ -125,13 +197,18 @@ class QuickModelAlignWidget(ScriptedLoadableModuleWidget):
     self.sourceModelSelector.filters  = ctk.ctkPathLineEdit().Files
     self.sourceModelSelector.nameFilters=["*.ply"]
     alignSingleWidgetLayout.addRow("Prepared: ", self.sourceModelSelector)
-    
+    self.sourceDropBox = ModelDropBox("Drop Prepared .ply file here", self.sourceModelSelector, self.onSelect)
+    alignSingleWidgetLayout.addRow("", self.sourceDropBox)
+
     # Select target mesh
     #
     self.targetModelSelector = ctk.ctkPathLineEdit()
     self.targetModelSelector.filters  = ctk.ctkPathLineEdit().Files
     self.targetModelSelector.nameFilters=["*.ply"]
     alignSingleWidgetLayout.addRow("Ideal: ", self.targetModelSelector)
+    self.targetDropBox = ModelDropBox("Drop Ideal .ply file here", self.targetModelSelector, self.onSelect)
+    alignSingleWidgetLayout.addRow("", self.targetDropBox)
+
 
     # Make scaling of models optional
     self.skipScalingCheckBox = qt.QCheckBox()
@@ -340,6 +417,8 @@ class QuickModelAlignWidget(ScriptedLoadableModuleWidget):
     m2.GetDisplayNode().SetAndObserveColorNodeID(customRedColorMapTable.GetID())
     m2.GetDisplayNode().SetScalarRangeFlag(0)
     m2.GetDisplayNode().SetScalarRange(-tolerableErrorMargin, tolerableErrorMargin)
+    self.centerViewOnModels()
+
 
 
   def onChangeTolerance(self):
@@ -349,6 +428,8 @@ class QuickModelAlignWidget(ScriptedLoadableModuleWidget):
     m2 = self.targetModelNode
     m1.GetDisplayNode().SetScalarRange(-tolerableErrorMargin, tolerableErrorMargin)
     m2.GetDisplayNode().SetScalarRange(-tolerableErrorMargin, tolerableErrorMargin)
+    self.centerViewOnModels()
+
    
 
   def showMinimalScreenUI(self):
@@ -485,9 +566,9 @@ class QuickModelAlignWidget(ScriptedLoadableModuleWidget):
       self.targetModelNode.GetDisplayNode().SetOpacity(1-self.fadeSlider.value)
       
       if self.fadeSlider.value > 0.5:
-        self.view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.LowerEdge,'Prepared')
+        self.view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.LowerEdge,'Scan A')
       else:
-        self.view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.LowerEdge,'Ideal')
+        self.view.cornerAnnotation().SetText(vtk.vtkCornerAnnotation.LowerEdge,'Scan B')
         
       self.rockCount += 1
     
@@ -524,6 +605,28 @@ class QuickModelAlignWidget(ScriptedLoadableModuleWidget):
     viewNode = slicer.app.layoutManager().threeDWidget(0).mrmlViewNode()
     viewNode.SetBackgroundColor(0.9,0.9,0.9)
     viewNode.SetBackgroundColor2(0.9,0.9,0.9)
+    
+  def centerViewOnModels(self):
+    layoutManager = slicer.app.layoutManager()
+    threeDView = layoutManager.threeDWidget(0).threeDView()
+    renderer = threeDView.renderWindow().GetRenderers().GetFirstRenderer()
+
+    if renderer:
+      renderer.ResetCamera()
+      camera = renderer.GetActiveCamera()
+      if camera:
+        bounds = [0, 0, 0, 0, 0, 0]
+        renderer.ComputeVisiblePropBounds(bounds)
+        center = [
+          (bounds[0] + bounds[1]) / 2.0,
+          (bounds[2] + bounds[3]) / 2.0,
+          (bounds[4] + bounds[5]) / 2.0
+        ]
+        camera.SetFocalPoint(center)
+        renderer.ResetCameraClippingRange()
+
+    threeDView.forceRender()
+
 
   def addAdvancedMenu(self, currentWidgetLayout):
     #
